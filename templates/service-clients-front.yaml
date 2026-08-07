@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra clients-front stack: ECS Fargate task/service for the
+  frontend (Next.js server-side BFF), ALB target group + listener rule on
+  the root path (sole public entry point - clients-service is internal-only).
+  Calls clients-service server-side via Cloud Map DNS. SESSION_SECRET (used
+  to sign JWT session cookies) comes from Secrets Manager.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  Cpu:
+    Type: Number
+    Default: 256
+  Memory:
+    Type: Number
+    Default: 512
+  DesiredCount:
+    Type: Number
+    Default: 1
+  HealthCheckPath:
+    Type: String
+    Default: /
+  ImageTag:
+    Type: String
+    Default: latest
+  ListenerRulePriority:
+    Type: Number
+    Default: 20
+  BackendServiceName:
+    Type: String
+    Default: clients-service
+  BackendPort:
+    Type: Number
+    Default: 8080
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/camedina-${Environment}-clients-front
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-clients-front-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadSessionSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SessionSecret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-clients-front-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub camedina-${Environment} clients-front task security group
+      VpcId: !ImportValue
+        Fn::Sub: ${Environment}-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !ImportValue
+            Fn::Sub: ${Environment}-alb-sg-id
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub camedina-${Environment}-clients-front-task-sg
+
+  BackendIngressFromFront:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue
+        Fn::Sub: ${Environment}-clients-service-task-sg-id
+      IpProtocol: tcp
+      FromPort: !Ref BackendPort
+      ToPort: !Ref BackendPort
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  SessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub camedina-${Environment}-clients-front-session
+      Description: !Sub camedina-${Environment} clients-front session signing secret
+      GenerateSecretString:
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub camedina-${Environment}-clients-front
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: clients-front
+          Image: !Join
+            - ':'
+            - - !ImportValue
+                Fn::Sub: ${Environment}-clients-front-repo-uri
+              - !Ref ImageTag
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: BACKEND_API_URL
+              Value: !Sub http://${BackendServiceName}.${Environment}.internal:${BackendPort}
+          Secrets:
+            - Name: SESSION_SECRET
+              ValueFrom: !Ref SessionSecret
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: clients-front
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub camedina-${Environment}-clients-front-tg
+      TargetType: ip
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !ImportValue
+        Fn::Sub: ${Environment}-vpc-id
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: HTTP
+
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !ImportValue
+        Fn::Sub: ${Environment}-alb-http-listener-arn
+      Priority: !Ref ListenerRulePriority
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: ListenerRule
+    Properties:
+      ServiceName: !Sub camedina-${Environment}-clients-front
+      Cluster: !ImportValue
+        Fn::Sub: ${Environment}-ecs-cluster-name
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !ImportValue
+              Fn::Sub: ${Environment}-private-subnet-1-id
+            - !ImportValue
+              Fn::Sub: ${Environment}-private-subnet-2-id
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: clients-front
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ServiceName:
+    Value: !Ref Service
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition

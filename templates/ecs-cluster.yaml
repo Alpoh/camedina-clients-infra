@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra ECS cluster stack: Fargate + Fargate Spot capacity providers,
+  plus a private Cloud Map namespace so clients-front can reach clients-service
+  by internal DNS name without going through the public ALB.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub camedina-${Environment}-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  ClusterCapacityProviders:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    Properties:
+      Cluster: !Ref Cluster
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub ${Environment}.internal
+      Vpc: !ImportValue
+        Fn::Sub: ${Environment}-vpc-id
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub ${Environment}-ecs-cluster-name
+  ClusterArn:
+    Value: !GetAtt Cluster.Arn
+    Export:
+      Name: !Sub ${Environment}-ecs-cluster-arn
+  ServiceDiscoveryNamespaceId:
+    Value: !GetAtt ServiceDiscoveryNamespace.Id
+    Export:
+      Name: !Sub ${Environment}-service-discovery-namespace-id

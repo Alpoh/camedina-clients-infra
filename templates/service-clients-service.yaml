@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra clients-service stack: ECS Fargate task/service for the
+  backend. Internal-only - not attached to the public ALB. clients-front
+  calls it server-side via Cloud Map service discovery DNS
+  (clients-service.<Environment>.internal:<ContainerPort>), since it acts as
+  a BFF and the browser never talks to clients-service directly. DB
+  credentials injected from Secrets Manager.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  ContainerPort:
+    Type: Number
+    Default: 8080
+  Cpu:
+    Type: Number
+    Default: 256
+  Memory:
+    Type: Number
+    Default: 512
+  DesiredCount:
+    Type: Number
+    Default: 1
+  ImageTag:
+    Type: String
+    Default: latest
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/camedina-${Environment}-clients-service
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-clients-service-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadDbSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !ImportValue
+                  Fn::Sub: ${Environment}-clients-service-db-secret-arn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-clients-service-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub camedina-${Environment} clients-service task security group
+      VpcId: !ImportValue
+        Fn::Sub: ${Environment}-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub camedina-${Environment}-clients-service-task-sg
+
+  DbIngressFromTask:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue
+        Fn::Sub: ${Environment}-clients-service-db-sg-id
+      IpProtocol: tcp
+      FromPort: !ImportValue
+        Fn::Sub: ${Environment}-clients-service-db-port
+      ToPort: !ImportValue
+        Fn::Sub: ${Environment}-clients-service-db-port
+      SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: clients-service
+      NamespaceId: !ImportValue
+        Fn::Sub: ${Environment}-service-discovery-namespace-id
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub camedina-${Environment}-clients-service
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: clients-service
+          Image: !Join
+            - ':'
+            - - !ImportValue
+                Fn::Sub: ${Environment}-clients-service-repo-uri
+              - !Ref ImageTag
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: DB_HOST
+              Value: !ImportValue
+                Fn::Sub: ${Environment}-clients-service-db-endpoint
+            - Name: DB_PORT
+              Value: !ImportValue
+                Fn::Sub: ${Environment}-clients-service-db-port
+            - Name: DB_NAME
+              Value: clients
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub
+                - '${SecretArn}:username::'
+                - SecretArn: !ImportValue
+                    Fn::Sub: ${Environment}-clients-service-db-secret-arn
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub
+                - '${SecretArn}:password::'
+                - SecretArn: !ImportValue
+                    Fn::Sub: ${Environment}-clients-service-db-secret-arn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: clients-service
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub camedina-${Environment}-clients-service
+      Cluster: !ImportValue
+        Fn::Sub: ${Environment}-ecs-cluster-name
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !ImportValue
+              Fn::Sub: ${Environment}-private-subnet-1-id
+            - !ImportValue
+              Fn::Sub: ${Environment}-private-subnet-2-id
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+
+Outputs:
+  ServiceName:
+    Value: !Ref Service
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
+  TaskSecurityGroupId:
+    Value: !Ref TaskSecurityGroup
+    Export:
+      Name: !Sub ${Environment}-clients-service-task-sg-id

@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra ALB stack: internet-facing ALB, security group, HTTP listener.
+  Plain HTTP for now - no domain/ACM cert yet. Per-service stacks attach their
+  own target groups and listener rules to the listener exported here.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub camedina-${Environment} ALB security group
+      VpcId: !ImportValue
+        Fn::Sub: ${Environment}-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub camedina-${Environment}-alb-sg
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub camedina-${Environment}-alb
+      Scheme: internet-facing
+      Type: application
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Subnets:
+        - !ImportValue
+          Fn::Sub: ${Environment}-public-subnet-1-id
+        - !ImportValue
+          Fn::Sub: ${Environment}-public-subnet-2-id
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '404'
+            ContentType: text/plain
+            MessageBody: Not found
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt Alb.DNSName
+    Export:
+      Name: !Sub ${Environment}-alb-dns-name
+  AlbArn:
+    Value: !Ref Alb
+    Export:
+      Name: !Sub ${Environment}-alb-arn
+  HttpListenerArn:
+    Value: !Ref HttpListener
+    Export:
+      Name: !Sub ${Environment}-alb-http-listener-arn
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub ${Environment}-alb-sg-id

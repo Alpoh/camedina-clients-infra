@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra ECR stack: repositories for clients-service and clients-front.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  ClientsServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub camedina-${Environment}-clients-service
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  ClientsFrontRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub camedina-${Environment}-clients-front
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+Outputs:
+  ClientsServiceRepositoryUri:
+    Value: !GetAtt ClientsServiceRepository.RepositoryUri
+    Export:
+      Name: !Sub ${Environment}-clients-service-repo-uri
+  ClientsServiceRepositoryArn:
+    Value: !GetAtt ClientsServiceRepository.Arn
+    Export:
+      Name: !Sub ${Environment}-clients-service-repo-arn
+  ClientsFrontRepositoryUri:
+    Value: !GetAtt ClientsFrontRepository.RepositoryUri
+    Export:
+      Name: !Sub ${Environment}-clients-front-repo-uri
+  ClientsFrontRepositoryArn:
+    Value: !GetAtt ClientsFrontRepository.Arn
+    Export:
+      Name: !Sub ${Environment}-clients-front-repo-arn
