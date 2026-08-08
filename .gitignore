@@ -1,3 +1,31 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
 .idea/
 *.iml
-.DS_Store
+.vscode/
+*.swp
+
+# AWS CLI / SAM / CloudFormation build artifacts
+.aws-sam/
+packaged.yaml
+packaged-*.yaml
+*.packaged.yaml
+.changeset/
+
+# Local env overrides / secrets — config/*.env (dev.env, qa.env, ...) are checked in on purpose,
+# but anything suffixed .local.env is meant to stay on the developer's machine
+config/*.local.env
+.env
+.env.local
+
+# Credentials that should never be committed
+*.pem
+*.key
+credentials
+.aws/credentials
+
+# Logs
+*.log
