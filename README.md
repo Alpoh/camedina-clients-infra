@@ -30,6 +30,13 @@ Makefile     wraps `aws cloudformation deploy` per stack
 
 Stacks are independent (linked via `Fn::ImportValue` exports named `${Environment}-<resource>`), so any single stack can be redeployed without touching the others — as long as dependency order below is respected on first deploy.
 
+## Current deployment status (dev, as of 2026-08-09)
+
+- `camedina-dev-network` — deployed
+- `camedina-dev-ecr` — deployed (`camedina-dev-clients-front`, `camedina-dev-clients-service` repos live)
+- `camedina-dev-ecs-cluster`, `camedina-dev-alb`, `camedina-dev-rds` — not yet deployed
+- `camedina-dev-service-*` — blocked: no Dockerfile in either app repo yet, so nothing to push to ECR
+
 ## Deploy order (dev)
 
 ```
