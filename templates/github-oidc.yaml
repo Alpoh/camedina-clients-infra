@@ -53,8 +53,13 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
+                # GitHub appends @<immutable-id> to the org/repo names in the sub claim for
+                # a window after a rename/transfer (hardening against old-name squatting).
+                # Both org (Alpoh, id 32462981) and this repo were renamed recently, so both
+                # the plain-name and id-qualified forms are listed until GitHub reverts.
                 token.actions.githubusercontent.com:sub:
                   - !Sub repo:${GitHubOrg}/${InfraRepo}:ref:refs/heads/main
+                  - !Sub repo:${GitHubOrg}@32462981/${InfraRepo}@1327152156:ref:refs/heads/main
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
 
@@ -75,9 +80,13 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
+                # See comment on InfraDeployRole - both plain-name and id-qualified sub
+                # forms are needed until GitHub stops appending @<immutable-id>.
                 token.actions.githubusercontent.com:sub:
                   - !Sub repo:${GitHubOrg}/${ServiceRepo}:ref:refs/heads/main
                   - !Sub repo:${GitHubOrg}/${FrontRepo}:ref:refs/heads/main
+                  - !Sub repo:${GitHubOrg}@32462981/${ServiceRepo}@1323352258:ref:refs/heads/main
+                  - !Sub repo:${GitHubOrg}@32462981/${FrontRepo}@1326881065:ref:refs/heads/main
       Policies:
         - PolicyName: EcrPush
           PolicyDocument:
