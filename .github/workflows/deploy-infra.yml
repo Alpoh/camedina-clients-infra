@@ -1,0 +1,44 @@
+name: Deploy Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'templates/network.yaml'
+      - 'templates/ecr.yaml'
+      - 'templates/ecs-cluster.yaml'
+      - 'templates/alb.yaml'
+      - 'templates/rds.yaml'
+      - 'config/**'
+      - 'Makefile'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: '997979358457'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/camedina-dev-github-infra-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate templates
+        run: make validate
+
+      # Platform stacks only - service-clients-*.yaml are deliberately excluded
+      # (both from the trigger paths above and from this target) so this
+      # workflow never races clients-service/clients-front's own deploy.yml,
+      # which drives the ECS Service directly via force-new-deployment.
+      # Run `make deploy-all-services` by hand for service-stack changes.
+      - name: Deploy platform stacks
+        run: make deploy-platform

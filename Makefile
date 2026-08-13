@@ -5,14 +5,29 @@ STACK_NAME_PREFIX = $(STACK_PREFIX)-$(ENVIRONMENT)
 DEPLOY = aws cloudformation deploy --region $(AWS_REGION) --capabilities CAPABILITY_NAMED_IAM
 
 .PHONY: deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-rds \
-        deploy-service-clients-service deploy-service-clients-front deploy-all \
-        validate
+        deploy-service-clients-service deploy-service-clients-front \
+        deploy-platform deploy-all-services deploy-all \
+        deploy-github-oidc validate
 
 validate:
 	for f in templates/*.yaml; do \
 		echo "Validating $$f"; \
 		aws cloudformation validate-template --region $(AWS_REGION) --template-body file://$$f > /dev/null; \
 	done
+
+# Bootstrap only - deploy by hand once with camilo-cli, not part of deploy-all.
+# Creates the OIDC trust the GitHub Actions workflows assume, so it can't
+# depend on CI already being able to authenticate. Requires deploy-ecr to
+# have run first (imports the ECR repo ARNs).
+deploy-github-oidc:
+	$(DEPLOY) \
+		--template-file templates/github-oidc.yaml \
+		--stack-name $(STACK_NAME_PREFIX)-github-oidc \
+		--parameter-overrides Environment=$(ENVIRONMENT) \
+			GitHubOrg=$(GITHUB_ORG) \
+			InfraRepo=$(GITHUB_INFRA_REPO) \
+			ServiceRepo=$(GITHUB_SERVICE_REPO) \
+			FrontRepo=$(GITHUB_FRONT_REPO)
 
 deploy-network:
 	$(DEPLOY) \
@@ -64,7 +79,6 @@ deploy-service-clients-service:
 			Cpu=$(CLIENTS_SERVICE_CPU) \
 			Memory=$(CLIENTS_SERVICE_MEMORY) \
 			DesiredCount=$(CLIENTS_SERVICE_DESIRED_COUNT) \
-			HealthCheckPath=$(CLIENTS_SERVICE_HEALTH_CHECK_PATH) \
 			ImageTag=$(CLIENTS_SERVICE_IMAGE_TAG)
 
 deploy-service-clients-front:
@@ -79,5 +93,17 @@ deploy-service-clients-front:
 			HealthCheckPath=$(CLIENTS_FRONT_HEALTH_CHECK_PATH) \
 			ImageTag=$(CLIENTS_FRONT_IMAGE_TAG)
 
-deploy-all: deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-rds \
-	deploy-service-clients-service deploy-service-clients-front
+# Platform-only stacks: no app image lives in these, so re-running them never
+# touches a running ECS service's task definition. Safe to auto-deploy on any
+# infra push - this is what deploy-infra.yml's CI job runs.
+deploy-platform: deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-rds
+
+# Service stacks own the ECS Service + TaskDefinition that each app's own
+# deploy.yml also drives via `aws ecs update-service --force-new-deployment`.
+# Deliberately NOT run by CI on every infra push (see deploy-infra.yml) -
+# doing so would race the app repos' own deploys of the same ECS service.
+# Run by hand (first bootstrap, or a deliberate task-level change like
+# Cpu/Memory/DesiredCount) after checking no app deploy is in flight.
+deploy-all-services: deploy-service-clients-service deploy-service-clients-front
+
+deploy-all: deploy-platform deploy-all-services

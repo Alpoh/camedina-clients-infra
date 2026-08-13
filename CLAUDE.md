@@ -17,10 +17,21 @@ make deploy-alb
 make deploy-rds
 make deploy-service-clients-service
 make deploy-service-clients-front
-make deploy-all                     # runs all of the above in order
+make deploy-platform                # network, ecr, ecs-cluster, alb, rds — what CI runs
+make deploy-all-services            # both service-clients-* stacks
+make deploy-all                     # deploy-platform + deploy-all-services
 ```
 
 Deploy order matters on first deploy (dependency chain via `Fn::ImportValue`); after that, any single stack can be redeployed independently.
+
+`.github/workflows/deploy-infra.yml` only ever runs `make deploy-platform`, and only triggers on
+pushes touching the platform templates, `config/**`, or `Makefile` — never on
+`templates/service-clients-*.yaml`. That's deliberate: the ECS Service + TaskDefinition those
+templates own is also driven directly by `clients-service`'s and `clients-front`'s own
+`deploy.yml` (`aws ecs update-service --force-new-deployment`), so auto-deploying the service
+stacks here on every infra push would race those app-repo deploys of the same ECS service.
+Deploy service-stack changes with `make deploy-service-clients-service` /
+`deploy-service-clients-front` by hand instead, once no app deploy is in flight.
 
 To deploy a single stack manually with different parameters, copy the relevant `$(DEPLOY) ...` block from the `Makefile` rather than editing the target itself.
 

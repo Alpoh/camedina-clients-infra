@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra GitHub Actions OIDC stack: lets the three app repos
+  (camedina-clients-infra, camedina-clients-services, camedina-clients-front)
+  authenticate to AWS from GitHub Actions without long-lived access keys.
+  Bootstrap stack - deployed once by hand via camilo-cli, not part of
+  deploy-all, since it defines the trust the CI workflows themselves rely on.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: Alpoh
+  InfraRepo:
+    Type: String
+    Default: camedina-clients-infra
+  ServiceRepo:
+    Type: String
+    Default: camedina-clients-services
+  FrontRepo:
+    Type: String
+    Default: camedina-clients-front
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # Full account access for the infra repo - it owns network/RDS/ECS/IAM/ALB
+  # stacks via CloudFormation, so scoping this tightly means re-deriving the
+  # union of every service those templates touch. Same bootstrap tradeoff as
+  # the camilo-cli IAM user; revisit before this becomes a shared/prod account.
+  InfraDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-github-infra-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOrg}/${InfraRepo}:ref:refs/heads/main
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # Scoped to just what the app repos need: push images to their own ECR
+  # repo, and kick an ECS redeploy. No IAM/network/RDS access.
+  AppDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub camedina-${Environment}-github-app-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOrg}/${ServiceRepo}:ref:refs/heads/main
+                  - !Sub repo:${GitHubOrg}/${FrontRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: EcrPush
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:BatchGetImage
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: ${Environment}-clients-service-repo-arn
+                  - !ImportValue
+                    Fn::Sub: ${Environment}-clients-front-repo-arn
+        - PolicyName: EcsDeploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                Resource:
+                  - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/camedina-${Environment}-cluster/camedina-${Environment}-clients-service
+                  - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/camedina-${Environment}-cluster/camedina-${Environment}-clients-front
+              - Effect: Allow
+                Action: ecs:DescribeTaskDefinition
+                Resource: '*'
+
+Outputs:
+  InfraDeployRoleArn:
+    Value: !GetAtt InfraDeployRole.Arn
+    Export:
+      Name: !Sub ${Environment}-github-infra-role-arn
+  AppDeployRoleArn:
+    Value: !GetAtt AppDeployRole.Arn
+    Export:
+      Name: !Sub ${Environment}-github-app-role-arn

@@ -52,6 +52,19 @@ make deploy-service-clients-front
 
 Or `make deploy-all` to run all of the above in order.
 
+## CI/CD ownership split
+
+`.github/workflows/deploy-infra.yml` only runs `make deploy-platform` (network, ecr,
+ecs-cluster, alb, rds), triggered on push to templates for those stacks, `config/**`, or
+`Makefile`. It deliberately excludes `templates/service-clients-*.yaml` and the
+`deploy-service-*`/`deploy-all-services` targets: those own the ECS Service + TaskDefinition
+that `clients-service`'s and `clients-front`'s own `deploy.yml` workflows also drive directly
+via `aws ecs update-service --force-new-deployment`. Auto-deploying the service stacks here too
+would let an infra-only push race an app's own deploy of the same ECS service. Run
+`make deploy-all-services` (or a single `make deploy-service-*`) by hand for first bootstrap or
+a deliberate task-level change (Cpu/Memory/DesiredCount), after checking no app deploy is in
+flight.
+
 ## Pushing images
 
 After `make deploy-ecr`, get the repo URIs from the stack outputs and push:
