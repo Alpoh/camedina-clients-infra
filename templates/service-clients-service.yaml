@@ -5,7 +5,9 @@ Description: >
   calls it server-side via Cloud Map service discovery DNS
   (clients-service.<Environment>.internal:<ContainerPort>), since it acts as
   a BFF and the browser never talks to clients-service directly. DB
-  credentials injected from Secrets Manager.
+  credentials injected from Secrets Manager. CPU/memory alarms and
+  autoscaling publish to / are driven off the alerting stack's SNS topic, so
+  deploy-alerting must run before this stack.
 
 Parameters:
   Environment:
@@ -26,6 +28,12 @@ Parameters:
   ImageTag:
     Type: String
     Default: latest
+  MinCapacity:
+    Type: Number
+    Default: 1
+  MaxCapacity:
+    Type: Number
+    Default: 3
 
 Resources:
   LogGroup:
@@ -175,6 +183,91 @@ Resources:
             - !Ref TaskSecurityGroup
       ServiceRegistries:
         - RegistryArn: !GetAtt DiscoveryService.Arn
+
+  CpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-service-cpu-high
+      AlarmDescription: clients-service ECS task CPU above 80% for 10 minutes.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  MemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-service-memory-high
+      AlarmDescription: clients-service ECS task memory above 80% for 10 minutes.
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub
+        - service/${ClusterName}/${ServiceName}
+        - ClusterName: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+          ServiceName: !GetAtt Service.Name
+      MinCapacity: !Ref MinCapacity
+      MaxCapacity: !Ref MaxCapacity
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub camedina-${Environment}-clients-service-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 60
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
+
+  MemoryScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub camedina-${Environment}-clients-service-memory-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        TargetValue: 70
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
 
 Outputs:
   ServiceName:

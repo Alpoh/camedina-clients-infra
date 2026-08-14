@@ -4,7 +4,9 @@ Description: >
   frontend (Next.js server-side BFF), ALB target group + listener rule on
   the root path (sole public entry point - clients-service is internal-only).
   Calls clients-service server-side via Cloud Map DNS. SESSION_SECRET (used
-  to sign JWT session cookies) comes from Secrets Manager.
+  to sign JWT session cookies) comes from Secrets Manager. CPU/memory/target
+  health alarms and autoscaling publish to / are driven off the alerting
+  stack's SNS topic, so deploy-alerting must run before this stack.
 
 Parameters:
   Environment:
@@ -37,6 +39,12 @@ Parameters:
   BackendPort:
     Type: Number
     Default: 8080
+  MinCapacity:
+    Type: Number
+    Default: 1
+  MaxCapacity:
+    Type: Number
+    Default: 3
 
 Resources:
   LogGroup:
@@ -200,6 +208,114 @@ Resources:
         - ContainerName: clients-front
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroup
+
+  CpuHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-front-cpu-high
+      AlarmDescription: clients-front ECS task CPU above 80% for 10 minutes.
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  MemoryHighAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-front-memory-high
+      AlarmDescription: clients-front ECS task memory above 80% for 10 minutes.
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+        - Name: ServiceName
+          Value: !GetAtt Service.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  UnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-front-unhealthy-hosts
+      AlarmDescription: clients-front target group has unhealthy targets.
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !ImportValue
+            Fn::Sub: ${Environment}-alb-full-name
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub
+        - service/${ClusterName}/${ServiceName}
+        - ClusterName: !ImportValue
+            Fn::Sub: ${Environment}-ecs-cluster-name
+          ServiceName: !GetAtt Service.Name
+      MinCapacity: !Ref MinCapacity
+      MaxCapacity: !Ref MaxCapacity
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub camedina-${Environment}-clients-front-cpu-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 60
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
+
+  MemoryScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub camedina-${Environment}-clients-front-memory-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        TargetValue: 70
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
 
 Outputs:
   ServiceName:

@@ -4,10 +4,12 @@ on:
   push:
     branches: [main]
     paths:
+      - 'templates/alerting.yaml'
       - 'templates/network.yaml'
       - 'templates/ecr.yaml'
       - 'templates/ecs-cluster.yaml'
       - 'templates/alb.yaml'
+      - 'templates/waf.yaml'
       - 'templates/rds.yaml'
       - 'config/**'
       - 'Makefile'

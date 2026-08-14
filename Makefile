@@ -2,9 +2,14 @@ include config/dev.env
 export
 
 STACK_NAME_PREFIX = $(STACK_PREFIX)-$(ENVIRONMENT)
-DEPLOY = aws cloudformation deploy --region $(AWS_REGION) --capabilities CAPABILITY_NAMED_IAM
+# Stack-level tags propagate to every taggable resource CloudFormation creates
+# in the stack, so this is the one place tagging policy lives - no per-resource
+# Tags blocks needed in the templates themselves.
+TAGS = --tags Project=clients Environment=$(ENVIRONMENT) ManagedBy=cloudformation Owner=$(STACK_PREFIX)
+DEPLOY = aws cloudformation deploy --region $(AWS_REGION) --capabilities CAPABILITY_NAMED_IAM $(TAGS)
 
 .PHONY: deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-rds \
+        deploy-alerting deploy-waf \
         deploy-service-clients-service deploy-service-clients-front \
         deploy-platform deploy-all-services deploy-all \
         deploy-github-oidc validate
@@ -28,6 +33,13 @@ deploy-github-oidc:
 			InfraRepo=$(GITHUB_INFRA_REPO) \
 			ServiceRepo=$(GITHUB_SERVICE_REPO) \
 			FrontRepo=$(GITHUB_FRONT_REPO)
+
+deploy-alerting:
+	$(DEPLOY) \
+		--template-file templates/alerting.yaml \
+		--stack-name $(STACK_NAME_PREFIX)-alerting \
+		--parameter-overrides Environment=$(ENVIRONMENT) \
+			AlertEmail=$(ALERT_EMAIL)
 
 deploy-network:
 	$(DEPLOY) \
@@ -70,6 +82,14 @@ deploy-rds:
 			DbMultiAz=$(DB_MULTI_AZ) \
 			DbBackupRetentionDays=$(DB_BACKUP_RETENTION_DAYS)
 
+# Depends on deploy-alb (imports its ALB ARN). Ongoing AWS cost - see
+# templates/waf.yaml.
+deploy-waf:
+	$(DEPLOY) \
+		--template-file templates/waf.yaml \
+		--stack-name $(STACK_NAME_PREFIX)-waf \
+		--parameter-overrides Environment=$(ENVIRONMENT)
+
 deploy-service-clients-service:
 	$(DEPLOY) \
 		--template-file templates/service-clients-service.yaml \
@@ -79,7 +99,9 @@ deploy-service-clients-service:
 			Cpu=$(CLIENTS_SERVICE_CPU) \
 			Memory=$(CLIENTS_SERVICE_MEMORY) \
 			DesiredCount=$(CLIENTS_SERVICE_DESIRED_COUNT) \
-			ImageTag=$(CLIENTS_SERVICE_IMAGE_TAG)
+			ImageTag=$(CLIENTS_SERVICE_IMAGE_TAG) \
+			MinCapacity=$(CLIENTS_SERVICE_MIN_CAPACITY) \
+			MaxCapacity=$(CLIENTS_SERVICE_MAX_CAPACITY)
 
 deploy-service-clients-front:
 	$(DEPLOY) \
@@ -91,12 +113,15 @@ deploy-service-clients-front:
 			Memory=$(CLIENTS_FRONT_MEMORY) \
 			DesiredCount=$(CLIENTS_FRONT_DESIRED_COUNT) \
 			HealthCheckPath=$(CLIENTS_FRONT_HEALTH_CHECK_PATH) \
-			ImageTag=$(CLIENTS_FRONT_IMAGE_TAG)
+			ImageTag=$(CLIENTS_FRONT_IMAGE_TAG) \
+			MinCapacity=$(CLIENTS_FRONT_MIN_CAPACITY) \
+			MaxCapacity=$(CLIENTS_FRONT_MAX_CAPACITY)
 
 # Platform-only stacks: no app image lives in these, so re-running them never
 # touches a running ECS service's task definition. Safe to auto-deploy on any
-# infra push - this is what deploy-infra.yml's CI job runs.
-deploy-platform: deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-rds
+# infra push - this is what deploy-infra.yml's CI job runs. deploy-alerting
+# runs first since rds/waf/service stacks import its SNS topic/ALB ARN.
+deploy-platform: deploy-alerting deploy-network deploy-ecr deploy-ecs-cluster deploy-alb deploy-waf deploy-rds
 
 # Service stacks own the ECS Service + TaskDefinition that each app's own
 # deploy.yml also drives via `aws ecs update-service --force-new-deployment`.

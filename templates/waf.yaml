@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra WAF stack: regional WAFv2 WebACL with AWS managed rule
+  groups, associated with the ALB. Has an ongoing AWS cost (~$5-10/mo base
+  + per-request) - deploy-alb must run first since this imports its ARN.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub camedina-${Environment}-alb-waf
+      Description: !Sub camedina-${Environment} ALB WebACL - AWS managed baseline rules.
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub camedina-${Environment}-alb-waf
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 0
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub camedina-${Environment}-common-rule-set
+        - Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 1
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub camedina-${Environment}-known-bad-inputs
+
+  WebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !ImportValue
+        Fn::Sub: ${Environment}-alb-arn
+      WebACLArn: !GetAtt WebAcl.Arn
+
+Outputs:
+  WebAclArn:
+    Value: !GetAtt WebAcl.Arn
+    Export:
+      Name: !Sub ${Environment}-alb-waf-acl-arn

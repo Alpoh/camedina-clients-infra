@@ -72,3 +72,7 @@ Outputs:
     Value: !Ref AlbSecurityGroup
     Export:
       Name: !Sub ${Environment}-alb-sg-id
+  AlbFullName:
+    Value: !GetAtt Alb.LoadBalancerFullName
+    Export:
+      Name: !Sub ${Environment}-alb-full-name

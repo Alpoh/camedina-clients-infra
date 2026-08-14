@@ -4,6 +4,8 @@ Description: >
   Secrets Manager. The DB security group starts with no ingress rules -
   service-clients-service.yaml adds a SecurityGroupIngress rule scoped to
   its own ECS task security group to avoid a circular stack dependency.
+  CPU/storage alarms publish to the alerting stack's SNS topic, so
+  deploy-alerting must run before deploy-rds.
 
 Parameters:
   Environment:
@@ -91,6 +93,46 @@ Resources:
       SecretId: !Ref DbSecret
       TargetId: !Ref DbInstance
       TargetType: AWS::RDS::DBInstance
+
+  DbCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-service-db-cpu-high
+      AlarmDescription: RDS CPUUtilization above 80% for 15 minutes.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
+
+  DbFreeStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub camedina-${Environment}-clients-service-db-storage-low
+      AlarmDescription: RDS FreeStorageSpace below 2GB.
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DbInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue
+          Fn::Sub: ${Environment}-alerts-topic-arn
 
 Outputs:
   DbEndpointAddress:

@@ -10,19 +10,21 @@ AWS CloudFormation infrastructure for **clients-service** (Spring Boot backend) 
 
 ```
 make validate                       # aws cloudformation validate-template on every template — run before any deploy
+make deploy-alerting                # SNS alerts topic + email subscription — rds/waf/service stacks import its TopicArn
 make deploy-network                 # VPC, subnets, NAT — everything else depends on this
 make deploy-ecr                     # ECR repos — push images here before deploying services
 make deploy-ecs-cluster
 make deploy-alb
+make deploy-waf                     # WAFv2 WebACL on the ALB — depends on deploy-alb
 make deploy-rds
 make deploy-service-clients-service
 make deploy-service-clients-front
-make deploy-platform                # network, ecr, ecs-cluster, alb, rds — what CI runs
+make deploy-platform                # alerting, network, ecr, ecs-cluster, alb, waf, rds — what CI runs
 make deploy-all-services            # both service-clients-* stacks
 make deploy-all                     # deploy-platform + deploy-all-services
 ```
 
-Deploy order matters on first deploy (dependency chain via `Fn::ImportValue`); after that, any single stack can be redeployed independently.
+Deploy order matters on first deploy (dependency chain via `Fn::ImportValue`); after that, any single stack can be redeployed independently. `deploy-alerting` must run before `deploy-rds` and the service stacks (they import its SNS `TopicArn` for alarms), and `deploy-waf` must run after `deploy-alb` (it imports the ALB ARN).
 
 `.github/workflows/deploy-infra.yml` only ever runs `make deploy-platform`, and only triggers on
 pushes touching the platform templates, `config/**`, or `Makefile` — never on
@@ -51,6 +53,10 @@ The ECS services need at least one image pushed to start successfully.
 - `clients-front`'s task gets `BACKEND_API_URL` pointing at that Cloud Map DNS name, and `SESSION_SECRET` from Secrets Manager.
 - Stacks are independent, linked only via `Fn::ImportValue` on exports named `${Environment}-<resource>` (e.g. `dev-VpcId`) — never hardcode cross-stack resource IDs, always `!ImportValue` the export.
 - `config/dev.env` holds all per-environment parameter values; the Makefile `include`s it and exports every variable so template parameters stay out of the Makefile itself. Templates themselves take an `Environment` parameter and are otherwise environment-agnostic.
+- Every stack is deployed with `--tags Project=clients Environment=... ManagedBy=cloudformation Owner=...` (the `TAGS` var in the Makefile), which CloudFormation propagates to every taggable resource in the stack — there are no per-resource `Tags:` blocks in the templates themselves. Add new tags in one place: the Makefile's `TAGS` variable.
+- `alerting.yaml` creates an SNS topic (`${Environment}-alerts-topic-arn` export) with an email subscription (`ALERT_EMAIL` in `config/dev.env`). `rds.yaml` and both `service-clients-*.yaml` stacks publish CloudWatch alarms (CPU/memory/storage/unhealthy-host) to it via `!ImportValue`.
+- Both ECS services have Application Auto Scaling (`ScalableTarget` + target-tracking `ScalingPolicy` on CPU and memory) between `MinCapacity`/`MaxCapacity` (`config/dev.env`, default 1/3).
+- `waf.yaml` attaches a regional WAFv2 WebACL (AWS managed Common + KnownBadInputs rule groups) to the ALB. This has an ongoing AWS cost even in dev.
 
 ### Adding another environment
 
@@ -62,4 +68,5 @@ Copy `config/dev.env` to e.g. `config/qa.env`, adjust values, and either paramet
 - Container ports: clients-service `8080`, clients-front `3000` — confirmed against the app repos.
 - clients-front health check path `/` (marketing landing page) is a reasonable default. clients-service has no code yet, so its actual health endpoint (e.g. Spring Boot Actuator `/actuator/health`) is unconfirmed — it currently has no ALB health check at all since it isn't behind the ALB.
 - Neither app repo has a Dockerfile yet — needed before `make deploy-service-*` can succeed.
-- Single NAT Gateway and single-AZ RDS are deliberate dev cost tradeoffs; revisit for `qa`/`prod` (NAT per AZ, Multi-AZ RDS, larger instance sizing, autoscaling).
+- Single NAT Gateway and single-AZ RDS are deliberate dev cost tradeoffs; revisit for `qa`/`prod` (NAT per AZ, Multi-AZ RDS, larger instance sizing).
+- No resource naming abstraction beyond the `camedina-` prefix baked into resource names/descriptions — fine solo, would need genericizing if this repo is ever shared with a team.

@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  camedina-infra alerting stack: SNS topic that CloudWatch alarms in other
+  stacks (rds, service-clients-*) publish to, with an email subscription.
+  Deployed before those stacks since they import its TopicArn.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  AlertEmail:
+    Type: String
+    Description: Email address to subscribe to the alerts topic.
+
+Resources:
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub camedina-${Environment}-alerts
+      DisplayName: !Sub camedina-${Environment} alerts
+
+  AlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+Outputs:
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub ${Environment}-alerts-topic-arn
